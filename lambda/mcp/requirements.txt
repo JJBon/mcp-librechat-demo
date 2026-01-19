@@ -1,0 +1,4 @@
+pandas
+httpx
+pydantic>=2.0
+python-multipart

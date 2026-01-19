@@ -1,0 +1,14 @@
+variable "app_name" {
+  description = "Application name"
+  type        = string
+}
+
+variable "agent_runtime_version" {
+  description = "Runtime version for PROD endpoint"
+  type        = string
+  default     = "1"
+}
+
+data "aws_region" "current" { }
+
+data "aws_caller_identity" "current" {}
