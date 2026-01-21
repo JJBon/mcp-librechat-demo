@@ -18,7 +18,4 @@ output "dcr_endpoint" {
   value       = "${aws_api_gateway_stage.prod.invoke_url}/register"
 }
 
-output "initial_client_id" {
-  description = "Initial Cognito client ID"
-  value       = aws_cognito_user_pool_client.cognito_app_client.id
-}
+

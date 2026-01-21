@@ -64,15 +64,15 @@ resource "aws_api_gateway_integration_response" "oidc_config_response" {
 
   response_templates = {
     "application/json" = jsonencode({
-      issuer                 = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.cognito_user_pool.id}"
-      authorization_endpoint = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/authorize"
-      token_endpoint         = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/token"
-      userinfo_endpoint      = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/userInfo"
-      revocation_endpoint    = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/revoke"
-      jwks_uri               = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.cognito_user_pool.id}/.well-known/jwks.json"
+      issuer                 = "https://${var.okta_domain}"
+      authorization_endpoint = "https://${var.okta_domain}/oauth2/v1/authorize"
+      token_endpoint         = "https://${var.okta_domain}/oauth2/v1/token"
+      userinfo_endpoint      = "https://${var.okta_domain}/oauth2/v1/userinfo"
+      revocation_endpoint    = "https://${var.okta_domain}/oauth2/v1/revoke"
+      jwks_uri               = "https://${var.okta_domain}/oauth2/v1/keys"
       registration_endpoint  = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
-      scopes_supported       = ["openid", "email", "phone", "profile", "mcp-unified/read", "mcp-unified/write"],
-      response_types_supported = ["code", "token"]
+      scopes_supported       = ["openid", "email", "phone", "profile", "offline_access"],
+      response_types_supported = ["code"]
       grant_types_supported    = ["authorization_code", "refresh_token"]
       subject_types_supported  = ["public"]
       id_token_signing_alg_values_supported = ["RS256"]
@@ -190,10 +190,12 @@ resource "aws_lambda_function" "dcr_lambda" {
 
   environment {
     variables = {
-      USER_POOL_ID    = aws_cognito_user_pool.cognito_user_pool.id
-      GATEWAY_NAME    = "${var.app_name}-Gateway" 
-      RESOURCE_PREFIX = var.app_name
-      COGNITO_SCOPE   = "mcp-unified/read mcp-unified/write"
+      OKTA_DOMAIN        = var.okta_domain
+      OKTA_CLIENT_ID     = var.okta_client_id
+      OKTA_CLIENT_SECRET = var.okta_client_secret
+      OKTA_APP_GROUP_ID  = var.okta_app_group_id
+      GATEWAY_NAME       = "${var.app_name}-Gateway" 
+      RESOURCE_PREFIX    = var.app_name
     }
   }
 }
@@ -233,14 +235,6 @@ resource "aws_iam_role_policy" "dcr_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:CreateUserPoolClient",
-          "cognito-idp:DescribeUserPoolClient"
-        ]
-        Resource = aws_cognito_user_pool.cognito_user_pool.arn
-      },
       {
         Effect = "Allow"
         Action = [

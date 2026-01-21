@@ -113,7 +113,8 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
     custom_jwt_authorizer {
       # Use the DCR API Gateway OIDC endpoint NOT the Cognito one directly
       discovery_url   = "${aws_api_gateway_stage.prod.invoke_url}/.well-known/openid-configuration"
-      allowed_clients = [aws_cognito_user_pool_client.cognito_app_client.id]
+      # Typically empty initially for DCR, or add a manual static client ID if you have one.
+      allowed_clients = [] 
     }
   }
 }
