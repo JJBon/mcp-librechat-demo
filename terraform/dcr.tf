@@ -194,8 +194,11 @@ resource "aws_lambda_function" "dcr_lambda" {
       OKTA_CLIENT_ID     = var.okta_client_id
       OKTA_CLIENT_SECRET = var.okta_client_secret
       OKTA_APP_GROUP_ID  = var.okta_app_group_id
-      GATEWAY_NAME       = "${var.app_name}-Gateway" 
-      RESOURCE_PREFIX    = var.app_name
+      OKTA_APP_GROUP_ID     = var.okta_app_group_id
+      GATEWAY_NAME          = "${var.app_name}-Gateway" 
+      RESOURCE_PREFIX       = var.app_name
+      ALLOW_LOCALHOST       = str(var.allow_localhost_dcr)
+      ALLOWED_DOMAIN_PATTERN = var.allowed_redirect_domain_pattern
     }
   }
 }

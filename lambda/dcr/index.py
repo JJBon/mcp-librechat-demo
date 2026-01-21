@@ -145,6 +145,34 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
         logger.error(f"Okta API Error: {e.code} - {error_body}")
         raise Exception(f"Okta API Error: {error_body}")
 
+def validate_redirect_uris(uris):
+    """Validates Redirect URIs based on configuration restrictions"""
+    allow_localhost = os.environ.get('ALLOW_LOCALHOST', 'false').lower() == 'true'
+    pattern_str = os.environ.get('ALLOWED_DOMAIN_PATTERN', '')
+    
+    domain_pattern = None
+    if pattern_str:
+        try:
+            domain_pattern = re.compile(pattern_str)
+        except re.error as e:
+            logger.error(f"Invalid domain regex: {e}")
+            # Fail closed? Or open? Let's log and allow if regex is broken to avoid outages, but warn heavily.
+            # Ideally fail closed for security.
+            return False, "Configuration error: Invalid domain pattern"
+
+    for uri in uris:
+        # Check Localhost
+        if not allow_localhost:
+            if 'localhost' in uri or '127.0.0.1' in uri:
+                return False, f"Localhost redirect URIs are not allowed: {uri}"
+        
+        # Check Allowed Domain Pattern
+        if domain_pattern:
+            if not domain_pattern.search(uri):
+                return False, f"Redirect URI does not match allowed domain pattern: {uri}"
+                
+    return True, ""
+
 def handler(event, context):
     logger.info(f"DCR request: {json.dumps(event)}")
 
@@ -160,9 +188,18 @@ def handler(event, context):
 
     redirect_uris = body.get('redirect_uris', ['http://localhost:3000'])
 
-    # Validate redirect URIs
+    # Validate Format
     if not isinstance(redirect_uris, list) or not redirect_uris:
         return response(400, {'error': 'invalid_redirect_uri', 'error_description': 'redirect_uris must be a non-empty array'})
+
+    # ---------------------------------------------------------
+    # RESTRICTION LOGIC: Validate URIs against Policy
+    # ---------------------------------------------------------
+    valid, msg = validate_redirect_uris(redirect_uris)
+    if not valid:
+        logger.warning(f"Blocked registration request due to policy: {msg}")
+        return response(403, {'error': 'access_denied', 'error_description': msg})
+    # ---------------------------------------------------------
 
     okta_domain = os.environ['OKTA_DOMAIN']
     client_id_service = os.environ['OKTA_CLIENT_ID']
