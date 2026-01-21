@@ -158,8 +158,13 @@ resource "aws_api_gateway_deployment" "oauth_api_deploy" {
   depends_on = [
     aws_api_gateway_integration_response.oidc_config_response,
     aws_api_gateway_integration.register_lambda,
-    aws_api_gateway_integration_response.register_options_response
+    aws_api_gateway_integration_response.register_options_response,
+    aws_api_gateway_integration_response.oidc_config_options_response  # Add new dependency
   ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_api_gateway_stage" "prod" {
@@ -192,7 +197,8 @@ resource "aws_lambda_function" "dcr_lambda" {
     variables = {
       OKTA_DOMAIN        = var.okta_domain
       OKTA_CLIENT_ID     = var.okta_client_id
-      OKTA_CLIENT_SECRET = var.okta_client_secret
+      OKTA_PRIVATE_KEY   = var.okta_private_key
+      OKTA_PRIVATE_KEY_ID = var.okta_private_key_id
       OKTA_APP_GROUP_ID  = var.okta_app_group_id
       OKTA_APP_GROUP_ID     = var.okta_app_group_id
       GATEWAY_NAME          = "${var.app_name}-Gateway" 
@@ -201,6 +207,8 @@ resource "aws_lambda_function" "dcr_lambda" {
       ALLOWED_DOMAIN_PATTERN = var.allowed_redirect_domain_pattern
     }
   }
+
+  layers = [aws_lambda_layer_version.dcr_dependencies.arn]
 }
 
 resource "aws_lambda_permission" "apigw_invoke" {

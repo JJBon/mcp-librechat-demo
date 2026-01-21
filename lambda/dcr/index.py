@@ -28,30 +28,52 @@ def find_gateway_by_name(name):
         logger.error(f"Failed to find gateway: {e}")
     return None
 
-def get_okta_token(okta_domain, client_id, client_secret):
-    """Fetches an OAuth 2.0 Access Token from Okta using Client Credentials"""
+import jwt # from pyjwt
+
+def generate_client_assertion(client_id, token_endpoint, private_key_pem, kid):
+    """Generates a signed JWT for Private Key Authentication"""
+    now = int(time.time())
+    payload = {
+        "aud": token_endpoint,
+        "iss": client_id,
+        "sub": client_id,
+        "exp": now + 300, # 5 minutes expiration
+        "iat": now,
+        "jti": str(uuid.uuid4())
+    }
+    
+    # Load private key
+    # We assume valid PEM format from env var
+    encoded_jwt = jwt.encode(payload, private_key_pem, algorithm="RS256", headers={"kid": kid})
+    return encoded_jwt
+
+def get_okta_token(okta_domain, client_id, private_key_pem, kid):
+    """Fetches an OAuth 2.0 Access Token using Private Key JWT"""
     url = f"https://{okta_domain}/oauth2/v1/token"
     
-    # HTTP Basic Auth header
-    auth_str = f"{client_id}:{client_secret}"
-    b64_auth = base64.b64encode(auth_str.encode()).decode()
-    
-    headers = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': f'Basic {b64_auth}'
-    }
+    signed_jwt = generate_client_assertion(client_id, url, private_key_pem, kid)
     
     data = urllib.parse.urlencode({
         'grant_type': 'client_credentials',
-        'scope': 'okta.clients.manage okta.groups.appAssignment.manage okta.clients.read'
+        'scope': 'okta.clients.manage okta.groups.manage', # Verified working via test_auth.py
+        'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        'client_assertion': signed_jwt
     }).encode('utf-8')
+    
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
 
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method='POST')
         with urllib.request.urlopen(req) as response:
             token_data = json.loads(response.read().decode('utf-8'))
             return token_data.get('access_token')
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        logger.error(f"Failed to get Okta access token: {e.code} - {error_body}")
+        raise Exception(f"Authentication with Okta failed: {error_body}")
     except Exception as e:
         logger.error(f"Failed to get Okta access token: {e}")
         raise Exception("Authentication with Okta failed")
@@ -127,7 +149,8 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
         "response_types": ["code"],
         "grant_types": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_method": "client_secret_basic",
-        "application_type": "web"
+        "application_type": "web",
+        "scope": "openid profile email offline_access"
     }
 
     headers = {
@@ -147,29 +170,23 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
 
 def validate_redirect_uris(uris):
     """Validates Redirect URIs based on configuration restrictions"""
-    allow_localhost = os.environ.get('ALLOW_LOCALHOST', 'false').lower() == 'true'
     pattern_str = os.environ.get('ALLOWED_DOMAIN_PATTERN', '')
     
-    domain_pattern = None
-    if pattern_str:
-        try:
-            domain_pattern = re.compile(pattern_str)
-        except re.error as e:
-            logger.error(f"Invalid domain regex: {e}")
-            # Fail closed? Or open? Let's log and allow if regex is broken to avoid outages, but warn heavily.
-            # Ideally fail closed for security.
-            return False, "Configuration error: Invalid domain pattern"
+    # Open Mode: If no whitelist pattern is configured, allow everything (including localhost)
+    # This facilitates local testing without extra configuration.
+    if not pattern_str:
+        return True, ""
+
+    # Restricted Mode: If pattern IS configured, we enforce it strictly.
+    try:
+        domain_pattern = re.compile(pattern_str)
+    except re.error as e:
+        logger.error(f"Invalid domain regex: {e}")
+        return False, "Configuration error: Invalid domain pattern"
 
     for uri in uris:
-        # Check Localhost
-        if not allow_localhost:
-            if 'localhost' in uri or '127.0.0.1' in uri:
-                return False, f"Localhost redirect URIs are not allowed: {uri}"
-        
-        # Check Allowed Domain Pattern
-        if domain_pattern:
-            if not domain_pattern.search(uri):
-                return False, f"Redirect URI does not match allowed domain pattern: {uri}"
+        if not domain_pattern.search(uri):
+            return False, f"Redirect URI does not match allowed domain pattern: {uri}"
                 
     return True, ""
 
@@ -203,16 +220,19 @@ def handler(event, context):
 
     okta_domain = os.environ['OKTA_DOMAIN']
     client_id_service = os.environ['OKTA_CLIENT_ID']
-    client_secret_service = os.environ['OKTA_CLIENT_SECRET']
+    # client_secret_service = os.environ['OKTA_CLIENT_SECRET'] # Replaced by Private Key
+    private_key_pem = os.environ['OKTA_PRIVATE_KEY']
+    private_key_id = os.environ['OKTA_PRIVATE_KEY_ID']
     app_group_id = os.environ['OKTA_APP_GROUP_ID']
     gateway_name = os.environ['GATEWAY_NAME']
 
     try:
         # 1. Get Access Token
-        access_token = get_okta_token(okta_domain, client_id_service, client_secret_service)
+        access_token = get_okta_token(okta_domain, client_id_service, private_key_pem, private_key_id)
 
         # 2. Check for Existing Client (Idempotency)
         existing_client = find_existing_client(client_name, access_token, okta_domain)
+        # existing_client = None 
         
         if existing_client:
             logger.info(f"Client '{client_name}' already exists. Rotating secret.")
@@ -227,8 +247,8 @@ def handler(event, context):
             new_client_id = okta_app['client_id']
             new_client_secret = okta_app['client_secret']
 
-        # 3. Assign to Group (Always do this to ensure even existing apps are correctly grouped)
-        assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
+        # 3. Assign to Group (Disabled per user request)
+        # assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
 
         # 4. Add client to gateway AllowedClients
         gateway_id = find_gateway_by_name(gateway_name)
@@ -264,6 +284,7 @@ def handler(event, context):
             'client_secret': new_client_secret,
             'client_name': client_name,
             'redirect_uris': redirect_uris,
+            'scope': 'openid profile email offline_access',
             'token_endpoint_auth_method': 'client_secret_basic',
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']

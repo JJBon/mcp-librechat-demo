@@ -27,6 +27,12 @@ pip-log.txt
 lambda_build/
 build/
 dist/
+terraform/layer_build/
+terraform/dcr_layer.zip
+*.log
+*.json
+keys.txt
+scripts/
 
 # IDE
 .vscode/

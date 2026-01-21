@@ -25,6 +25,11 @@ variable "okta_client_secret" {
   sensitive   = true
 }
 
+variable "okta_private_key_id" {
+  description = "Key ID (kid) for the Private Key"
+  type        = string
+}
+
 variable "okta_app_group_id" {
   description = "Okta Group ID for AgentCore Apps (defines the Admin Role Resource Set scope)"
   type        = string
@@ -45,3 +50,9 @@ variable "allowed_redirect_domain_pattern" {
 data "aws_region" "current" { }
 
 data "aws_caller_identity" "current" {}
+
+variable "okta_private_key" {
+  description = "Private Key (PEM) for Okta Service App Authentication"
+  type        = string
+  sensitive   = true
+}
