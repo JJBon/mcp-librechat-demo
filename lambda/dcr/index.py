@@ -44,7 +44,7 @@ def get_okta_token(okta_domain, client_id, client_secret):
     
     data = urllib.parse.urlencode({
         'grant_type': 'client_credentials',
-        'scope': 'okta.clients.manage okta.groups.appAssignment.manage' # Request necessary scopes
+        'scope': 'okta.clients.manage okta.groups.appAssignment.manage okta.clients.read'
     }).encode('utf-8')
 
     try:
@@ -56,11 +56,52 @@ def get_okta_token(okta_domain, client_id, client_secret):
         logger.error(f"Failed to get Okta access token: {e}")
         raise Exception("Authentication with Okta failed")
 
+def find_existing_client(client_name, api_token, okta_domain):
+    """Search for an existing client by name to ensure idempotency"""
+    # Note: okta.clients.read scope required
+    safe_name = urllib.parse.quote(client_name)
+    url = f"https://{okta_domain}/oauth2/v1/clients?q={safe_name}&limit=1"
+    
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {api_token}'
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req) as response:
+            clients = json.loads(response.read().decode('utf-8'))
+            # Filter exact match because 'q' is a startsWith search
+            for client in clients:
+                if client.get('client_name') == client_name:
+                    return client
+            return None
+    except Exception as e:
+        logger.warning(f"Failed to search for existing client: {e}")
+        return None
+
+def rotate_client_secret(client_id, api_token, okta_domain):
+    """Rotates the client secret for an existing client"""
+    url = f"https://{okta_domain}/oauth2/v1/clients/{client_id}/lifecycle/newSecret"
+    
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_token}'
+    }
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps({}).encode('utf-8'), headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except Exception as e:
+        logger.error(f"Failed to rotate client secret: {e}")
+        raise
+
 def assign_app_to_group(app_id, group_id, api_token, okta_domain):
     """Assigns the newly created Okta App to the AgentCore Group (for scoped administration)"""
     url = f"https://{okta_domain}/api/v1/apps/{app_id}/groups/{group_id}"
     
-    # PUT request to assign group
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
@@ -68,42 +109,25 @@ def assign_app_to_group(app_id, group_id, api_token, okta_domain):
     }
     
     try:
-        # Empty body for this PUT request
         req = urllib.request.Request(url, data=json.dumps({}).encode('utf-8'), headers=headers, method='PUT')
         with urllib.request.urlopen(req) as response:
             logger.info(f"Assigned app {app_id} to group {group_id}")
             return True
     except Exception as e:
         logger.error(f"Failed to assign app {app_id} to group {group_id}: {e}")
-        # We don't raise here because the app is already created; we just log the error.
-        # However, this leaves the app "orphaned" from the Admin's perspective if using Scoped Roles.
         return False
 
 def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
-    """Creates an OIDC App in Okta"""
-    url = f"https://{okta_domain}/api/v1/apps"
+    """Creates an OIDC App in Okta using the Dynamic Client Registration API"""
+    url = f"https://{okta_domain}/oauth2/v1/clients"
     
-    # Payload for creating an OIDC app
     payload = {
-        "name": "oidc_client",
-        "label": client_name,
-        "signOnMode": "OPENID_CONNECT",
-        "credentials": {
-          "oauthClient": {
-            "token_endpoint_auth_method": "client_secret_basic"
-          }
-        },
-        "settings": {
-            "oauthClient": {
-                "client_uri": "http://localhost:3000",
-                "logo_uri": None,
-                "redirect_uris": redirect_uris,
-                "response_types": ["code"],
-                "grant_types": ["authorization_code", "refresh_token"],
-                "application_type": "web",
-                "consent_method": "TRUSTED"
-            }
-        }
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "response_types": ["code"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_method": "client_secret_basic",
+        "application_type": "web"
     }
 
     headers = {
@@ -150,17 +174,24 @@ def handler(event, context):
         # 1. Get Access Token
         access_token = get_okta_token(okta_domain, client_id_service, client_secret_service)
 
-        # 2. Create Okta Client
-        okta_app = create_okta_client(client_name, redirect_uris, access_token, okta_domain)
+        # 2. Check for Existing Client (Idempotency)
+        existing_client = find_existing_client(client_name, access_token, okta_domain)
         
-        okta_app_id = okta_app['id'] # The internal Okta ID (e.g., 0oa...)
-        new_client_id = okta_app['credentials']['oauthClient']['client_id']
-        new_client_secret = okta_app['credentials']['oauthClient']['client_secret']
+        if existing_client:
+            logger.info(f"Client '{client_name}' already exists. Rotating secret.")
+            new_client_id = existing_client['client_id']
+            # Rotate secret to ensure caller has valid credentials
+            secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
+            new_client_secret = secret_response['client_secret']
+        else:
+            # Create New Client
+            logger.info(f"Creating new client '{client_name}'")
+            okta_app = create_okta_client(client_name, redirect_uris, access_token, okta_domain)
+            new_client_id = okta_app['client_id']
+            new_client_secret = okta_app['client_secret']
 
-        logger.info(f"Created Okta client: {new_client_id} (Okta ID: {okta_app_id})")
-
-        # 3. Assign to Group (Critical for Scoped Admin Roles)
-        assign_app_to_group(okta_app_id, app_group_id, access_token, okta_domain)
+        # 3. Assign to Group (Always do this to ensure even existing apps are correctly grouped)
+        assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
 
         # 4. Add client to gateway AllowedClients
         gateway_id = find_gateway_by_name(gateway_name)
@@ -191,7 +222,7 @@ def handler(event, context):
             logger.warning(f"Gateway '{gateway_name}' not found - client created but not added to AllowedClients")
 
         # Return RFC 7591 compliant response
-        return response(201, {
+        return response(201 if not existing_client else 200, {
             'client_id': new_client_id,
             'client_secret': new_client_secret,
             'client_name': client_name,
