@@ -150,7 +150,7 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
         "grant_types": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_method": "client_secret_basic",
         "application_type": "web",
-        "scope": "openid profile email offline_access"
+        "scope": "openid profile email offline_access agentcore.gateway.access"
     }
 
     headers = {
@@ -256,7 +256,9 @@ def handler(event, context):
             try:
                 gateway = agentcore.get_gateway(gatewayIdentifier=gateway_id)
 
-                current_clients = gateway.get('authorizerConfiguration', {}).get('customJWTAuthorizer', {}).get('allowedClients', [])
+                current_custom_jwt = gateway.get('authorizerConfiguration', {}).get('customJWTAuthorizer', {})
+                current_clients = current_custom_jwt.get('allowedClients', [])
+                current_scopes = current_custom_jwt.get('allowedScopes', [])
                 updated_clients = list(set(current_clients + [new_client_id]))
 
                 agentcore.update_gateway(
@@ -267,8 +269,9 @@ def handler(event, context):
                     authorizerType=gateway['authorizerType'],
                     authorizerConfiguration={
                         'customJWTAuthorizer': {
-                            'discoveryUrl': gateway['authorizerConfiguration']['customJWTAuthorizer']['discoveryUrl'],
-                            'allowedClients': updated_clients
+                            'discoveryUrl': current_custom_jwt['discoveryUrl'],
+                            'allowedClients': updated_clients,
+                            'allowedScopes': current_scopes
                         }
                     }
                 )
@@ -284,7 +287,7 @@ def handler(event, context):
             'client_secret': new_client_secret,
             'client_name': client_name,
             'redirect_uris': redirect_uris,
-            'scope': 'openid profile email offline_access',
+            'scope': 'openid profile email offline_access agentcore.gateway.access',
             'token_endpoint_auth_method': 'client_secret_basic',
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']
