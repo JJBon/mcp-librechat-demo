@@ -64,14 +64,14 @@ resource "aws_api_gateway_integration_response" "oidc_config_response" {
 
   response_templates = {
     "application/json" = jsonencode({
-      issuer                 = "https://${var.okta_domain}"
-      authorization_endpoint = "https://${var.okta_domain}/oauth2/v1/authorize"
-      token_endpoint         = "https://${var.okta_domain}/oauth2/v1/token"
-      userinfo_endpoint      = "https://${var.okta_domain}/oauth2/v1/userinfo"
-      revocation_endpoint    = "https://${var.okta_domain}/oauth2/v1/revoke"
-      jwks_uri               = "https://${var.okta_domain}/oauth2/v1/keys"
+      issuer                 = "https://${var.okta_domain}/oauth2/default"
+      authorization_endpoint = "https://${var.okta_domain}/oauth2/default/v1/authorize"
+      token_endpoint         = "https://${var.okta_domain}/oauth2/default/v1/token"
+      userinfo_endpoint      = "https://${var.okta_domain}/oauth2/default/v1/userinfo"
+      revocation_endpoint    = "https://${var.okta_domain}/oauth2/default/v1/revoke"
+      jwks_uri               = "https://${var.okta_domain}/oauth2/default/v1/keys"
       registration_endpoint  = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
-      scopes_supported       = ["openid", "email", "phone", "profile", "offline_access"],
+      scopes_supported       = ["openid", "email", "phone", "profile", "offline_access", "agentcore.gateway.access"],
       response_types_supported = ["code"]
       grant_types_supported    = ["authorization_code", "refresh_token"]
       subject_types_supported  = ["public"]
