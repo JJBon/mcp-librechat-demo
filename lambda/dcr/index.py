@@ -148,9 +148,9 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
         "redirect_uris": redirect_uris,
         "response_types": ["code"],
         "grant_types": ["authorization_code", "refresh_token"],
-        "token_endpoint_auth_method": "client_secret_basic",
-        "application_type": "web",
-        "scope": "openid profile email offline_access agentcore.gateway.access"
+        "token_endpoint_auth_method": "none",
+        "application_type": "browser"
+        #"scope": "openid profile email offline_access agentcore.gateway.access"
     }
 
     headers = {
@@ -235,17 +235,26 @@ def handler(event, context):
         # existing_client = None 
         
         if existing_client:
-            logger.info(f"Client '{client_name}' already exists. Rotating secret.")
+            logger.info(f"Client '{client_name}' already exists.")
             new_client_id = existing_client['client_id']
-            # Rotate secret to ensure caller has valid credentials
-            secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
-            new_client_secret = secret_response['client_secret']
+            
+            # Use .get() to handle cases where auth method key is missing or None
+            auth_method = existing_client.get('token_endpoint_auth_method')
+            
+            if auth_method == 'none':
+                logger.info("Public client detected, skipping secret rotation.")
+                new_client_secret = None
+            else:
+                logger.info("Confidential client detected, rotating secret.")
+                # Rotate secret to ensure caller has valid credentials
+                secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
+                new_client_secret = secret_response.get('client_secret')
         else:
             # Create New Client
             logger.info(f"Creating new client '{client_name}'")
             okta_app = create_okta_client(client_name, redirect_uris, access_token, okta_domain)
             new_client_id = okta_app['client_id']
-            new_client_secret = okta_app['client_secret']
+            new_client_secret = okta_app.get('client_secret')
 
         # 3. Assign to Group (Disabled per user request)
         # assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
@@ -270,8 +279,7 @@ def handler(event, context):
                     authorizerConfiguration={
                         'customJWTAuthorizer': {
                             'discoveryUrl': current_custom_jwt['discoveryUrl'],
-                            'allowedClients': updated_clients,
-                            'allowedScopes': current_scopes
+                            'allowedClients': updated_clients
                         }
                     }
                 )
@@ -287,8 +295,8 @@ def handler(event, context):
             'client_secret': new_client_secret,
             'client_name': client_name,
             'redirect_uris': redirect_uris,
-            'scope': 'openid profile email offline_access agentcore.gateway.access',
-            'token_endpoint_auth_method': 'client_secret_basic',
+
+            'token_endpoint_auth_method': 'none',
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']
         })
@@ -308,3 +316,5 @@ def response(status_code, body):
         },
         'body': json.dumps(body)
     }
+ 
+# Force Update
