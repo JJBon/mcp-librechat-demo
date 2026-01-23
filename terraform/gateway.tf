@@ -2,7 +2,7 @@ locals {
   # Adjust path to src directory relative to this module
   # mcplibrechatdemo is in agencore_demo/, src is in agencore_demo/src
   src_dir = "${path.module}/../agentMcp/src"
-  
+
   src_files = fileset(local.src_dir, "**")
   src_hashes = [
     for f in local.src_files :
@@ -19,7 +19,7 @@ locals {
 # MCP Lambda Function (Backend)
 ################################################################################
 data "archive_file" "mcp_lambda_zip" {
-  type        = "zip"
+  type = "zip"
   # Use the built directory with dependencies
   source_dir  = "${path.module}/../lambda/mcp/"
   output_path = "${path.module}/mcp_lambda.zip"
@@ -67,7 +67,7 @@ resource "aws_iam_role_policy_attachment" "mcp_lambda_basic" {
 ################################################################################
 
 resource "aws_iam_role" "agentcore_gateway_role" {
-  name               = "${var.app_name}-AgentCoreGatewayRole"
+  name = "${var.app_name}-AgentCoreGatewayRole"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -105,16 +105,23 @@ resource "aws_iam_role_policy" "agentcore_gateway_lambda_invoke" {
 ################################################################################
 
 resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
-  name            = "${var.app_name}-Gateway"
-  protocol_type   = "MCP"
+  name          = "${var.app_name}-Gateway"
+  protocol_type = "MCP"
+  protocol_configuration {
+    mcp {
+      instructions       = "Gateway for handling MCP requests"
+      search_type        = "SEMANTIC"
+      supported_versions = ["2025-03-26", "2025-06-18"]
+    }
+  }
   role_arn        = aws_iam_role.agentcore_gateway_role.arn
   authorizer_type = "CUSTOM_JWT"
   authorizer_configuration {
     custom_jwt_authorizer {
-      # Use the DCR API Gateway OIDC endpoint NOT the Cognito one directly
-      discovery_url   = "${aws_api_gateway_stage.prod.invoke_url}/.well-known/openid-configuration"
-      # Typically empty initially for DCR, or add a manual static client ID if you have one.
-      allowed_clients = ["placeholder-client-id"] 
+      # Point directly to real Okta (skip DCR proxy for validation reliability)
+      discovery_url = "https://${var.okta_domain}/oauth2/default/.well-known/openid-configuration"
+
+      allowed_clients = ["placeholder-client-id"]
     }
   }
 }
@@ -137,7 +144,7 @@ resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target"
             name        = "add_numbers"
             description = "Add two numbers together"
             input_schema {
-              type        = "object"
+              type = "object"
               property {
                 name        = "a"
                 type        = "integer"
@@ -154,7 +161,7 @@ resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target"
             name        = "multiply_numbers"
             description = "Multiply two numbers together"
             input_schema {
-              type        = "object"
+              type = "object"
               property {
                 name        = "a"
                 type        = "integer"
@@ -171,7 +178,7 @@ resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target"
             name        = "greet_user"
             description = "Greet a user by name"
             input_schema {
-              type        = "object"
+              type = "object"
               property {
                 name        = "name"
                 type        = "string"

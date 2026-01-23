@@ -146,12 +146,10 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
     payload = {
         "client_name": client_name,
         "redirect_uris": redirect_uris,
-        "response_types": ["code"],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "token_endpoint_auth_method": "client_secret_basic",
-        "application_type": "web",
-        "scope": "openid profile email offline_access agentcore.gateway.access"
-    }
+        "response_types": ["code","id_token"],
+        "grant_types": ["authorization_code","refresh_token","implicit"],
+        "token_endpoint_auth_method": "client_secret_post",
+        "application_type": "web"    }
 
     headers = {
         'Accept': 'application/json',
