@@ -111,7 +111,7 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
     mcp {
       instructions       = "Gateway for handling MCP requests"
       search_type        = "SEMANTIC"
-      supported_versions = ["2025-03-26", "2025-06-18"]
+      supported_versions = ["2025-06-18"]
     }
   }
   role_arn        = aws_iam_role.agentcore_gateway_role.arn
@@ -119,7 +119,7 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
   authorizer_configuration {
     custom_jwt_authorizer {
       # Point directly to real Okta (skip DCR proxy for validation reliability)
-      discovery_url = "https://${var.okta_domain}/oauth2/default/.well-known/openid-configuration"
+      discovery_url = "${aws_api_gateway_stage.prod.invoke_url}/.well-known/openid-configuration"
 
       allowed_clients = ["placeholder-client-id"]
     }

@@ -102,9 +102,23 @@ def find_existing_client(client_name, api_token, okta_domain):
         logger.warning(f"Failed to search for existing client: {e}")
         return None
 
-def rotate_client_secret(client_id, api_token, okta_domain):
-    """Rotates the client secret for an existing client"""
-    url = f"https://{okta_domain}/oauth2/v1/clients/{client_id}/lifecycle/newSecret"
+def update_and_rotate_client(client_id, client_name, redirect_uris, api_token, okta_domain):
+    """Updates client config (including redirect_uris) and generates new secret via PUT.
+    
+    Per Okta docs: When you PUT without client_secret, Okta generates a new one.
+    This ensures redirect_uris are updated AND secret is rotated in one call.
+    """
+    url = f"https://{okta_domain}/oauth2/v1/clients/{client_id}"
+    
+    payload = {
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "response_types": ["code"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_method": "client_secret_post",
+        "application_type": "web"
+    }
     
     headers = {
         'Accept': 'application/json',
@@ -113,11 +127,13 @@ def rotate_client_secret(client_id, api_token, okta_domain):
     }
 
     try:
-        req = urllib.request.Request(url, data=json.dumps({}).encode('utf-8'), headers=headers, method='POST')
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='PUT')
         with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode('utf-8'))
+            result = json.loads(response.read().decode('utf-8'))
+            logger.info(f"Updated client {client_id} with new redirect_uris: {redirect_uris}")
+            return result
     except Exception as e:
-        logger.error(f"Failed to rotate client secret: {e}")
+        logger.error(f"Failed to update client: {e}")
         raise
 
 def assign_app_to_group(app_id, group_id, api_token, okta_domain):
@@ -233,11 +249,11 @@ def handler(event, context):
         # existing_client = None 
         
         if existing_client:
-            logger.info(f"Client '{client_name}' already exists. Rotating secret.")
+            logger.info(f"Client '{client_name}' already exists. Updating config and rotating secret.")
             new_client_id = existing_client['client_id']
-            # Rotate secret to ensure caller has valid credentials
-            secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
-            new_client_secret = secret_response['client_secret']
+            # Update client config (including redirect_uris) AND rotate secret
+            updated_client = update_and_rotate_client(new_client_id, client_name, redirect_uris, access_token, okta_domain)
+            new_client_secret = updated_client['client_secret']
         else:
             # Create New Client
             logger.info(f"Creating new client '{client_name}'")
@@ -256,23 +272,28 @@ def handler(event, context):
 
                 current_custom_jwt = gateway.get('authorizerConfiguration', {}).get('customJWTAuthorizer', {})
                 current_clients = current_custom_jwt.get('allowedClients', [])
-                current_scopes = current_custom_jwt.get('allowedScopes', [])
                 updated_clients = list(set(current_clients + [new_client_id]))
 
-                agentcore.update_gateway(
-                    gatewayIdentifier=gateway_id,
-                    name=gateway['name'],
-                    roleArn=gateway['roleArn'],
-                    protocolType=gateway['protocolType'],
-                    authorizerType=gateway['authorizerType'],
-                    authorizerConfiguration={
+                # Build update params - preserve existing config
+                update_params = {
+                    'gatewayIdentifier': gateway_id,
+                    'name': gateway['name'],
+                    'roleArn': gateway['roleArn'],
+                    'protocolType': gateway['protocolType'],
+                    'authorizerType': gateway['authorizerType'],
+                    'authorizerConfiguration': {
                         'customJWTAuthorizer': {
                             'discoveryUrl': current_custom_jwt['discoveryUrl'],
-                            'allowedClients': updated_clients,
-                            'allowedScopes': current_scopes
+                            'allowedClients': updated_clients
                         }
                     }
-                )
+                }
+                
+                # Preserve protocolConfiguration if it exists (MCP settings)
+                if 'protocolConfiguration' in gateway:
+                    update_params['protocolConfiguration'] = gateway['protocolConfiguration']
+
+                agentcore.update_gateway(**update_params)
                 logger.info(f"Added client {new_client_id} to gateway AllowedClients")
             except Exception as e:
                 logger.error(f"Failed to update gateway: {e}")
@@ -286,7 +307,7 @@ def handler(event, context):
             'client_name': client_name,
             'redirect_uris': redirect_uris,
             'scope': 'openid profile email offline_access agentcore.gateway.access',
-            'token_endpoint_auth_method': 'client_secret_basic',
+            'token_endpoint_auth_method': 'client_secret_post',
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']
         })
