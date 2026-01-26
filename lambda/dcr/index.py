@@ -1,15 +1,40 @@
 import json
 import os
 import re
+import urllib.request
+import urllib.error
+import urllib.parse
 import boto3
 import uuid
 import logging
+import base64
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-cognito = boto3.client('cognito-idp')
 agentcore = boto3.client('bedrock-agentcore-control')
+secrets_manager = boto3.client('secretsmanager')
+
+# Cache for secrets to avoid repeated API calls within the same Lambda invocation
+_secrets_cache = {}
+
+def get_secret(secret_name):
+    """Fetches a secret from AWS Secrets Manager with caching"""
+    if secret_name in _secrets_cache:
+        return _secrets_cache[secret_name]
+    
+    try:
+        response = secrets_manager.get_secret_value(SecretId=secret_name)
+        secret_value = response.get('SecretString')
+        if secret_value:
+            _secrets_cache[secret_name] = secret_value
+            return secret_value
+        # Handle binary secrets if needed
+        return base64.b64decode(response.get('SecretBinary')).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to fetch secret {secret_name}: {e}")
+        raise
 
 def find_gateway_by_name(name):
     """Find gateway ID by name to avoid circular CloudFormation dependency"""
@@ -24,6 +49,182 @@ def find_gateway_by_name(name):
         logger.error(f"Failed to find gateway: {e}")
     return None
 
+import jwt # from pyjwt
+
+def generate_client_assertion(client_id, token_endpoint, private_key_pem, kid):
+    """Generates a signed JWT for Private Key Authentication"""
+    now = int(time.time())
+    payload = {
+        "aud": token_endpoint,
+        "iss": client_id,
+        "sub": client_id,
+        "exp": now + 300, # 5 minutes expiration
+        "iat": now,
+        "jti": str(uuid.uuid4())
+    }
+    
+    # Load private key
+    # We assume valid PEM format from env var
+    encoded_jwt = jwt.encode(payload, private_key_pem, algorithm="RS256", headers={"kid": kid})
+    return encoded_jwt
+
+def get_okta_token(okta_domain, client_id, private_key_pem, kid):
+    """Fetches an OAuth 2.0 Access Token using Private Key JWT"""
+    url = f"https://{okta_domain}/oauth2/v1/token"
+    
+    signed_jwt = generate_client_assertion(client_id, url, private_key_pem, kid)
+    
+    data = urllib.parse.urlencode({
+        'grant_type': 'client_credentials',
+        'scope': 'okta.clients.manage okta.groups.manage', # Verified working via test_auth.py
+        'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+        'client_assertion': signed_jwt
+    }).encode('utf-8')
+    
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            token_data = json.loads(response.read().decode('utf-8'))
+            return token_data.get('access_token')
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        logger.error(f"Failed to get Okta access token: {e.code} - {error_body}")
+        raise Exception(f"Authentication with Okta failed: {error_body}")
+    except Exception as e:
+        logger.error(f"Failed to get Okta access token: {e}")
+        raise Exception("Authentication with Okta failed")
+
+def find_existing_client(client_name, api_token, okta_domain):
+    """Search for an existing client by name to ensure idempotency"""
+    # Note: okta.clients.read scope required
+    safe_name = urllib.parse.quote(client_name)
+    url = f"https://{okta_domain}/oauth2/v1/clients?q={safe_name}&limit=1"
+    
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {api_token}'
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req) as response:
+            clients = json.loads(response.read().decode('utf-8'))
+            # Filter exact match because 'q' is a startsWith search
+            for client in clients:
+                if client.get('client_name') == client_name:
+                    return client
+            return None
+    except Exception as e:
+        logger.warning(f"Failed to search for existing client: {e}")
+        return None
+
+def update_and_rotate_client(client_id, client_name, redirect_uris, api_token, okta_domain):
+    """Updates client config (including redirect_uris) and generates new secret via PUT.
+    
+    Per Okta docs: When you PUT without client_secret, Okta generates a new one.
+    This ensures redirect_uris are updated AND secret is rotated in one call.
+    """
+    url = f"https://{okta_domain}/oauth2/v1/clients/{client_id}"
+    
+    payload = {
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "response_types": ["code"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_method": "client_secret_post",
+        "application_type": "web"
+    }
+    
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_token}'
+    }
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='PUT')
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            logger.info(f"Updated client {client_id} with new redirect_uris: {redirect_uris}")
+            return result
+    except Exception as e:
+        logger.error(f"Failed to update client: {e}")
+        raise
+
+def assign_app_to_group(app_id, group_id, api_token, okta_domain):
+    """Assigns the newly created Okta App to the AgentCore Group (for scoped administration)"""
+    url = f"https://{okta_domain}/api/v1/apps/{app_id}/groups/{group_id}"
+    
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_token}'
+    }
+    
+    try:
+        req = urllib.request.Request(url, data=json.dumps({}).encode('utf-8'), headers=headers, method='PUT')
+        with urllib.request.urlopen(req) as response:
+            logger.info(f"Assigned app {app_id} to group {group_id}")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to assign app {app_id} to group {group_id}: {e}")
+        return False
+
+def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
+    """Creates an OIDC App in Okta using the Dynamic Client Registration API"""
+    url = f"https://{okta_domain}/oauth2/v1/clients"
+    
+    payload = {
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "response_types": ["code","id_token"],
+        "grant_types": ["authorization_code","refresh_token","implicit"],
+        "token_endpoint_auth_method": "client_secret_post",
+        "application_type": "web"    }
+
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_token}' 
+    }
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='POST')
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        logger.error(f"Okta API Error: {e.code} - {error_body}")
+        raise Exception(f"Okta API Error: {error_body}")
+
+def validate_redirect_uris(uris):
+    """Validates Redirect URIs based on configuration restrictions"""
+    pattern_str = os.environ.get('ALLOWED_DOMAIN_PATTERN', '')
+    
+    # Open Mode: If no whitelist pattern is configured, allow everything (including localhost)
+    # This facilitates local testing without extra configuration.
+    if not pattern_str:
+        return True, ""
+
+    # Restricted Mode: If pattern IS configured, we enforce it strictly.
+    try:
+        domain_pattern = re.compile(pattern_str)
+    except re.error as e:
+        logger.error(f"Invalid domain regex: {e}")
+        return False, "Configuration error: Invalid domain pattern"
+
+    for uri in uris:
+        if not domain_pattern.search(uri):
+            return False, f"Redirect URI does not match allowed domain pattern: {uri}"
+                
+    return True, ""
+
 def handler(event, context):
     logger.info(f"DCR request: {json.dumps(event)}")
 
@@ -35,84 +236,104 @@ def handler(event, context):
 
     # Extract client metadata
     raw_client_name = body.get('client_name', f"dcr-client-{uuid.uuid4().hex[:8]}")
+    client_name = re.sub(r'[^\w\s\-().]', '', raw_client_name).strip() or "Client"
 
-    # CRITICAL: Sanitize client name
-    # Cognito only allows [\w\s+=,.@-]+
-    # Claude Code sends names like "Claude Code (server-name)" which contain parentheses
-    client_name = re.sub(r'[^\w\s+=,.@-]', '-', raw_client_name)
+    redirect_uris = body.get('redirect_uris', ['http://localhost:3000'])
 
-    redirect_uris = body.get('redirect_uris', ['http://127.0.0.1:33418', 'http://localhost:33418'])
-
-    # Validate redirect URIs
+    # Validate Format
     if not isinstance(redirect_uris, list) or not redirect_uris:
         return response(400, {'error': 'invalid_redirect_uri', 'error_description': 'redirect_uris must be a non-empty array'})
 
-    user_pool_id = os.environ['USER_POOL_ID']
+    # ---------------------------------------------------------
+    # RESTRICTION LOGIC: Validate URIs against Policy
+    # ---------------------------------------------------------
+    valid, msg = validate_redirect_uris(redirect_uris)
+    if not valid:
+        logger.warning(f"Blocked registration request due to policy: {msg}")
+        return response(403, {'error': 'access_denied', 'error_description': msg})
+    # ---------------------------------------------------------
+
+    okta_domain = os.environ['OKTA_DOMAIN']
+    client_id_service = os.environ['OKTA_CLIENT_ID']
+    private_key_secret_name = os.environ['OKTA_PRIVATE_KEY_SECRET_NAME']
+    private_key_id = os.environ['OKTA_PRIVATE_KEY_ID']
     gateway_name = os.environ['GATEWAY_NAME']
-    prefix = os.environ['RESOURCE_PREFIX']
+    
+    # Fetch private key from Secrets Manager
+    private_key_pem = get_secret(private_key_secret_name)
 
     try:
-        # Create Cognito client with OAuth configuration
-        client_response = cognito.create_user_pool_client(
-            UserPoolId=user_pool_id,
-            ClientName=client_name,
-            GenerateSecret=True,
-            ExplicitAuthFlows=['ALLOW_USER_SRP_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
-            AllowedOAuthFlows=['code'],
-            AllowedOAuthScopes=os.environ['COGNITO_SCOPE'].split(' ') + ['email', 'openid', 'phone', 'profile'],
-            AllowedOAuthFlowsUserPoolClient=True,
-            CallbackURLs=redirect_uris,
-            SupportedIdentityProviders=['COGNITO']
-        )
+        # 1. Get Access Token
+        access_token = get_okta_token(okta_domain, client_id_service, private_key_pem, private_key_id)
 
-        client_id = client_response['UserPoolClient']['ClientId']
-        client_secret = client_response['UserPoolClient']['ClientSecret']
+        # 2. Check for Existing Client (Idempotency)
+        existing_client = find_existing_client(client_name, access_token, okta_domain)
+        # existing_client = None 
+        
+        if existing_client:
+            logger.info(f"Client '{client_name}' already exists. Updating config and rotating secret.")
+            new_client_id = existing_client['client_id']
+            # Update client config (including redirect_uris) AND rotate secret
+            updated_client = update_and_rotate_client(new_client_id, client_name, redirect_uris, access_token, okta_domain)
+            new_client_secret = updated_client['client_secret']
+        else:
+            # Create New Client
+            logger.info(f"Creating new client '{client_name}'")
+            okta_app = create_okta_client(client_name, redirect_uris, access_token, okta_domain)
+            new_client_id = okta_app['client_id']
+            new_client_secret = okta_app['client_secret']
 
-        logger.info(f"Created Cognito client: {client_id} (name: {client_name})")
+        # 3. Assign to Group (Disabled per user request)
+        # assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
 
-        # Add client to gateway AllowedClients
+        # 4. Add client to gateway AllowedClients
         gateway_id = find_gateway_by_name(gateway_name)
         if gateway_id:
             try:
                 gateway = agentcore.get_gateway(gatewayIdentifier=gateway_id)
 
-                current_clients = gateway.get('authorizerConfiguration', {}).get('customJWTAuthorizer', {}).get('allowedClients', [])
-                updated_clients = list(set(current_clients + [client_id]))
+                current_custom_jwt = gateway.get('authorizerConfiguration', {}).get('customJWTAuthorizer', {})
+                current_clients = current_custom_jwt.get('allowedClients', [])
+                updated_clients = list(set(current_clients + [new_client_id]))
 
-                agentcore.update_gateway(
-                    gatewayIdentifier=gateway_id,
-                    name=gateway['name'],
-                    roleArn=gateway['roleArn'],
-                    protocolType=gateway['protocolType'],
-                    authorizerType=gateway['authorizerType'],
-                    authorizerConfiguration={
+                # Build update params - preserve existing config
+                update_params = {
+                    'gatewayIdentifier': gateway_id,
+                    'name': gateway['name'],
+                    'roleArn': gateway['roleArn'],
+                    'protocolType': gateway['protocolType'],
+                    'authorizerType': gateway['authorizerType'],
+                    'authorizerConfiguration': {
                         'customJWTAuthorizer': {
-                            'discoveryUrl': gateway['authorizerConfiguration']['customJWTAuthorizer']['discoveryUrl'],
+                            'discoveryUrl': current_custom_jwt['discoveryUrl'],
                             'allowedClients': updated_clients
                         }
                     }
-                )
-                logger.info(f"Added client {client_id} to gateway AllowedClients")
+                }
+                
+                # Preserve protocolConfiguration if it exists (MCP settings)
+                if 'protocolConfiguration' in gateway:
+                    update_params['protocolConfiguration'] = gateway['protocolConfiguration']
+
+                agentcore.update_gateway(**update_params)
+                logger.info(f"Added client {new_client_id} to gateway AllowedClients")
             except Exception as e:
                 logger.error(f"Failed to update gateway: {e}")
-                # Don't fail the request - client is created, just needs manual gateway update
         else:
             logger.warning(f"Gateway '{gateway_name}' not found - client created but not added to AllowedClients")
 
         # Return RFC 7591 compliant response
-        return response(201, {
-            'client_id': client_id,
-            'client_secret': client_secret,
+        return response(201 if not existing_client else 200, {
+            'client_id': new_client_id,
+            'client_secret': new_client_secret,
             'client_name': client_name,
             'redirect_uris': redirect_uris,
-            'token_endpoint_auth_method': 'client_secret_basic',
+            'scope': 'openid profile email offline_access agentcore.gateway.access',
+            'token_endpoint_auth_method': 'client_secret_post',
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']
         })
 
-    except cognito.exceptions.InvalidParameterException as e:
-        logger.error(f"Invalid parameter: {e}")
-        return response(400, {'error': 'invalid_request', 'error_description': str(e)})
     except Exception as e:
         logger.error(f"DCR failed: {e}")
         return response(500, {'error': 'server_error', 'error_description': 'Client registration failed'})

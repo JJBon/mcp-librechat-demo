@@ -46,8 +46,8 @@ resource "aws_api_gateway_method_response" "oidc_config_200" {
   http_method = aws_api_gateway_method.oidc_config_get.http_method
   status_code = "200"
   response_parameters = {
-    "method.response.header.Content-Type"                 = true
-    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Content-Type"                = true
+    "method.response.header.Access-Control-Allow-Origin" = true
   }
 }
 
@@ -58,23 +58,23 @@ resource "aws_api_gateway_integration_response" "oidc_config_response" {
   status_code = aws_api_gateway_method_response.oidc_config_200.status_code
 
   response_parameters = {
-    "method.response.header.Content-Type"                 = "'application/json'"
-    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+    "method.response.header.Content-Type"                = "'application/json'"
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
   }
 
   response_templates = {
     "application/json" = jsonencode({
-      issuer                 = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.cognito_user_pool.id}"
-      authorization_endpoint = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/authorize"
-      token_endpoint         = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/token"
-      userinfo_endpoint      = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/userInfo"
-      revocation_endpoint    = "https://${aws_cognito_user_pool_domain.cognito_domain.domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/revoke"
-      jwks_uri               = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.cognito_user_pool.id}/.well-known/jwks.json"
-      registration_endpoint  = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
-      scopes_supported       = ["openid", "email", "phone", "profile", "mcp-unified/read", "mcp-unified/write"],
-      response_types_supported = ["code", "token"]
-      grant_types_supported    = ["authorization_code", "refresh_token"]
-      subject_types_supported  = ["public"]
+      issuer                                = "https://${var.okta_domain}/oauth2/default"
+      authorization_endpoint                = "https://${var.okta_domain}/oauth2/default/v1/authorize"
+      token_endpoint                        = "https://${var.okta_domain}/oauth2/default/v1/token"
+      userinfo_endpoint                     = "https://${var.okta_domain}/oauth2/default/v1/userinfo"
+      revocation_endpoint                   = "https://${var.okta_domain}/oauth2/default/v1/revoke"
+      jwks_uri                              = "https://${var.okta_domain}/oauth2/default/v1/keys"
+      registration_endpoint                 = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
+      scopes_supported                      = ["openid", "email", "phone", "profile", "offline_access", "agentcore.gateway.access"],
+      response_types_supported              = ["code"]
+      grant_types_supported                 = ["authorization_code", "refresh_token"]
+      subject_types_supported               = ["public"]
       id_token_signing_alg_values_supported = ["RS256"]
       token_endpoint_auth_methods_supported = ["client_secret_basic", "client_secret_post"]
       code_challenge_methods_supported      = ["S256"]
@@ -99,12 +99,12 @@ resource "aws_api_gateway_method" "register_post" {
 }
 
 resource "aws_api_gateway_integration" "register_lambda" {
-  rest_api_id = aws_api_gateway_rest_api.oauth_api.id
-  resource_id = aws_api_gateway_resource.register.id
-  http_method = aws_api_gateway_method.register_post.http_method
-  type        = "AWS_PROXY"
+  rest_api_id             = aws_api_gateway_rest_api.oauth_api.id
+  resource_id             = aws_api_gateway_resource.register.id
+  http_method             = aws_api_gateway_method.register_post.http_method
+  type                    = "AWS_PROXY"
   integration_http_method = "POST"
-  uri         = aws_lambda_function.dcr_lambda.invoke_arn
+  uri                     = aws_lambda_function.dcr_lambda.invoke_arn
 }
 
 # /register OPTIONS (CORS)
@@ -158,8 +158,13 @@ resource "aws_api_gateway_deployment" "oauth_api_deploy" {
   depends_on = [
     aws_api_gateway_integration_response.oidc_config_response,
     aws_api_gateway_integration.register_lambda,
-    aws_api_gateway_integration_response.register_options_response
+    aws_api_gateway_integration_response.register_options_response,
+    aws_api_gateway_integration_response.oidc_config_options_response # Add new dependency
   ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_api_gateway_stage" "prod" {
@@ -190,12 +195,18 @@ resource "aws_lambda_function" "dcr_lambda" {
 
   environment {
     variables = {
-      USER_POOL_ID    = aws_cognito_user_pool.cognito_user_pool.id
-      GATEWAY_NAME    = "${var.app_name}-Gateway" 
-      RESOURCE_PREFIX = var.app_name
-      COGNITO_SCOPE   = "mcp-unified/read mcp-unified/write"
+      OKTA_DOMAIN                  = var.okta_domain
+      OKTA_CLIENT_ID               = var.okta_client_id
+      OKTA_PRIVATE_KEY_SECRET_NAME = var.okta_private_key_secret_name
+      OKTA_PRIVATE_KEY_ID          = var.okta_private_key_id
+      GATEWAY_NAME                 = "${var.app_name}-Gateway"
+      RESOURCE_PREFIX              = var.app_name
+      ALLOW_LOCALHOST              = tostring(var.allow_localhost_dcr)
+      ALLOWED_DOMAIN_PATTERN       = var.allowed_redirect_domain_pattern
     }
   }
+
+  layers = [aws_lambda_layer_version.dcr_dependencies.arn]
 }
 
 resource "aws_lambda_permission" "apigw_invoke" {
@@ -215,8 +226,8 @@ resource "aws_iam_role" "dcr_lambda_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -236,14 +247,6 @@ resource "aws_iam_role_policy" "dcr_policy" {
       {
         Effect = "Allow"
         Action = [
-          "cognito-idp:CreateUserPoolClient",
-          "cognito-idp:DescribeUserPoolClient"
-        ]
-        Resource = aws_cognito_user_pool.cognito_user_pool.arn
-      },
-      {
-        Effect = "Allow"
-        Action = [
           "bedrock-agentcore:ListGateways",
           "bedrock-agentcore:GetGateway",
           "bedrock-agentcore:UpdateGateway"
@@ -251,9 +254,16 @@ resource "aws_iam_role_policy" "dcr_policy" {
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = "iam:PassRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
         Resource = aws_iam_role.agentcore_gateway_role.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = var.okta_private_key_secret_arn
       }
     ]
   })
