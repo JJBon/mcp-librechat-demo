@@ -37,4 +37,5 @@ scripts/
 # IDE
 .vscode/
 .idea/
-.DS_Store
+.DS_Store*.pem
+private-key.pem
