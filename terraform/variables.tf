@@ -19,20 +19,15 @@ variable "okta_client_id" {
   type        = string
 }
 
-variable "okta_client_secret" {
-  description = "Okta Service App Client Secret"
-  type        = string
-  sensitive   = true
-}
-
 variable "okta_private_key_id" {
   description = "Key ID (kid) for the Private Key"
   type        = string
 }
 
 variable "okta_app_group_id" {
-  description = "Okta Group ID for AgentCore Apps (defines the Admin Role Resource Set scope)"
+  description = "Okta Group ID for AgentCore Apps (optional - for app assignment)"
   type        = string
+  default     = ""
 }
 
 variable "allow_localhost_dcr" {
@@ -47,12 +42,16 @@ variable "allowed_redirect_domain_pattern" {
   default     = ""
 }
 
-data "aws_region" "current" { }
+data "aws_region" "current" {}
 
 data "aws_caller_identity" "current" {}
 
-variable "okta_private_key" {
-  description = "Private Key (PEM) for Okta Service App Authentication"
+variable "okta_private_key_secret_name" {
+  description = "Name or ARN of the AWS Secrets Manager secret containing the Okta private key PEM"
   type        = string
-  sensitive   = true
+}
+
+variable "okta_private_key_secret_arn" {
+  description = "ARN of the AWS Secrets Manager secret (for IAM policy)"
+  type        = string
 }

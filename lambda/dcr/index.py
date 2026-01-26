@@ -14,6 +14,27 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 agentcore = boto3.client('bedrock-agentcore-control')
+secrets_manager = boto3.client('secretsmanager')
+
+# Cache for secrets to avoid repeated API calls within the same Lambda invocation
+_secrets_cache = {}
+
+def get_secret(secret_name):
+    """Fetches a secret from AWS Secrets Manager with caching"""
+    if secret_name in _secrets_cache:
+        return _secrets_cache[secret_name]
+    
+    try:
+        response = secrets_manager.get_secret_value(SecretId=secret_name)
+        secret_value = response.get('SecretString')
+        if secret_value:
+            _secrets_cache[secret_name] = secret_value
+            return secret_value
+        # Handle binary secrets if needed
+        return base64.b64decode(response.get('SecretBinary')).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to fetch secret {secret_name}: {e}")
+        raise
 
 def find_gateway_by_name(name):
     """Find gateway ID by name to avoid circular CloudFormation dependency"""
@@ -234,11 +255,12 @@ def handler(event, context):
 
     okta_domain = os.environ['OKTA_DOMAIN']
     client_id_service = os.environ['OKTA_CLIENT_ID']
-    # client_secret_service = os.environ['OKTA_CLIENT_SECRET'] # Replaced by Private Key
-    private_key_pem = os.environ['OKTA_PRIVATE_KEY']
+    private_key_secret_name = os.environ['OKTA_PRIVATE_KEY_SECRET_NAME']
     private_key_id = os.environ['OKTA_PRIVATE_KEY_ID']
-    app_group_id = os.environ['OKTA_APP_GROUP_ID']
     gateway_name = os.environ['GATEWAY_NAME']
+    
+    # Fetch private key from Secrets Manager
+    private_key_pem = get_secret(private_key_secret_name)
 
     try:
         # 1. Get Access Token

@@ -195,16 +195,14 @@ resource "aws_lambda_function" "dcr_lambda" {
 
   environment {
     variables = {
-      OKTA_DOMAIN            = var.okta_domain
-      OKTA_CLIENT_ID         = var.okta_client_id
-      OKTA_PRIVATE_KEY       = var.okta_private_key
-      OKTA_PRIVATE_KEY_ID    = var.okta_private_key_id
-      OKTA_APP_GROUP_ID      = var.okta_app_group_id
-      OKTA_APP_GROUP_ID      = var.okta_app_group_id
-      GATEWAY_NAME           = "${var.app_name}-Gateway"
-      RESOURCE_PREFIX        = var.app_name
-      ALLOW_LOCALHOST        = tostring(var.allow_localhost_dcr)
-      ALLOWED_DOMAIN_PATTERN = var.allowed_redirect_domain_pattern
+      OKTA_DOMAIN                  = var.okta_domain
+      OKTA_CLIENT_ID               = var.okta_client_id
+      OKTA_PRIVATE_KEY_SECRET_NAME = var.okta_private_key_secret_name
+      OKTA_PRIVATE_KEY_ID          = var.okta_private_key_id
+      GATEWAY_NAME                 = "${var.app_name}-Gateway"
+      RESOURCE_PREFIX              = var.app_name
+      ALLOW_LOCALHOST              = tostring(var.allow_localhost_dcr)
+      ALLOWED_DOMAIN_PATTERN       = var.allowed_redirect_domain_pattern
     }
   }
 
@@ -259,6 +257,13 @@ resource "aws_iam_role_policy" "dcr_policy" {
         Effect   = "Allow"
         Action   = "iam:PassRole"
         Resource = aws_iam_role.agentcore_gateway_role.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = var.okta_private_key_secret_arn
       }
     ]
   })

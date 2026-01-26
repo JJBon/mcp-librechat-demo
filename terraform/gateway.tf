@@ -124,6 +124,12 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
       allowed_clients = ["placeholder-client-id"]
     }
   }
+
+  lifecycle {
+    ignore_changes = [
+      authorizer_configuration
+    ]
+  }
 }
 
 resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target" {
