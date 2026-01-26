@@ -11,8 +11,66 @@ locals {
 
   # Collapse all file hashes into one
   src_hash = sha256(join("", local.src_hashes))
+
+  # Syntheticdata MCP Server Target (Optional)
+  # Construct the runtime invocation URL with URL-encoded ARN
+  syntheticdata_encoded_arn = var.syntheticdata_runtime_arn != "" ? replace(replace(var.syntheticdata_runtime_arn, ":", "%3A"), "/", "%2F") : ""
+  syntheticdata_endpoint    = var.syntheticdata_runtime_arn != "" ? "https://bedrock-agentcore.${data.aws_region.current.name}.amazonaws.com/runtimes/${local.syntheticdata_encoded_arn}/invocations?qualifier=DEFAULT" : ""
 }
 
+################################################################################
+# Syntheticdata MCP Server Target (Optional)
+# Deploy runtime first: runtime/syntheticdata/deploy_runtime.py
+# Then set syntheticdata_runtime_arn variable
+################################################################################
+
+
+resource "aws_iam_role_policy" "agentcore_gateway_syntheticdata_invoke" {
+  count = var.syntheticdata_runtime_arn != "" ? 1 : 0
+
+  role = aws_iam_role.agentcore_gateway_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = [
+        "bedrock-agentcore:InvokeRuntime",
+        "bedrock-agentcore:InvokeRuntimeWithResponseStream"
+      ]
+      Effect   = "Allow"
+      Resource = [var.syntheticdata_runtime_arn]
+    }]
+  })
+}
+# Note: MCP Runtime targets require OAuth credential provider for M2M auth.
+# Gateway authenticates to Runtime using client_credentials.
+# User identity is passed through via the interceptor for authorization.
+resource "aws_bedrockagentcore_gateway_target" "syntheticdata_target" {
+  count = var.syntheticdata_runtime_arn != "" && var.syntheticdata_okta_client_id != "" ? 1 : 0
+
+  name               = "${var.app_name}-SyntheticData-Target-v8"
+  gateway_identifier = aws_bedrockagentcore_gateway.agentcore_gateway.gateway_id
+
+  # M2M OAuth for Gateway → Runtime connectivity
+  credential_provider_configuration {
+    oauth {
+      provider_arn = aws_bedrockagentcore_oauth2_credential_provider.syntheticdata_oauth[0].credential_provider_arn
+      scopes       = [var.syntheticdata_okta_scope]
+    }
+  }
+
+  target_configuration {
+    mcp {
+      mcp_server {
+        endpoint = local.syntheticdata_endpoint
+      }
+    }
+  }
+
+  depends_on = [
+    aws_bedrockagentcore_gateway.agentcore_gateway,
+    aws_bedrockagentcore_oauth2_credential_provider.syntheticdata_oauth
+  ]
+}
 
 
 ################################################################################
@@ -93,9 +151,12 @@ resource "aws_iam_role_policy" "agentcore_gateway_lambda_invoke" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action   = ["lambda:InvokeFunction"]
-      Effect   = "Allow"
-      Resource = [aws_lambda_function.mcp_lambda.arn]
+      Action = ["lambda:InvokeFunction"]
+      Effect = "Allow"
+      Resource = [
+        aws_lambda_function.mcp_lambda.arn,
+        aws_lambda_function.token_passthrough_lambda.arn
+      ]
     }]
   })
 }
@@ -125,11 +186,27 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
     }
   }
 
+  # Interceptor for token passthrough to MCP Runtime targets
+  # Passes user's JWT to Runtime for user delegation
+  interceptor_configuration {
+    interceptor {
+      lambda {
+        arn = aws_lambda_function.token_passthrough_lambda.arn
+      }
+    }
+    interception_points = ["REQUEST"]
+    input_configuration {
+      pass_request_headers = true
+    }
+  }
+
   lifecycle {
     ignore_changes = [
       authorizer_configuration
     ]
   }
+
+  depends_on = [aws_lambda_function.token_passthrough_lambda]
 }
 
 resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target" {

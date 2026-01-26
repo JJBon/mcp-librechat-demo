@@ -55,3 +55,13 @@ variable "okta_private_key_secret_arn" {
   description = "ARN of the AWS Secrets Manager secret (for IAM policy)"
   type        = string
 }
+
+################################################################################
+# Optional MCP Runtime Targets
+################################################################################
+
+variable "syntheticdata_runtime_arn" {
+  description = "ARN of the syntheticdata MCP server deployed to AgentCore Runtime. Leave empty to skip this target. Deploy using runtime/syntheticdata/deploy_runtime.py first."
+  type        = string
+  default     = ""
+}

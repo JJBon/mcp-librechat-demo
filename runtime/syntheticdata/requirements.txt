@@ -1,0 +1,12 @@
+# Core dependencies
+boto3>=1.35.0
+mcp>=1.9.0
+
+# AgentCore SDK for deployment
+bedrock-agentcore-starter-toolkit
+
+# Syntheticdata MCP Server
+awslabs.syntheticdata-mcp-server
+
+# For testing
+#streamable-http-sigv4
