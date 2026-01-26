@@ -5,6 +5,7 @@ resource "null_resource" "install_dependencies" {
 
   provisioner "local-exec" {
     command = <<EOT
+      rm -rf ${path.module}/layer_build
       mkdir -p ${path.module}/layer_build/python
       pip install -r ${path.module}/../lambda/dcr/requirements.txt -t ${path.module}/layer_build/python --platform manylinux2014_x86_64 --implementation cp --python-version 3.12 --only-binary=:all: --upgrade
     EOT
