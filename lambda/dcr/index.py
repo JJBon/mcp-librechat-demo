@@ -140,16 +140,23 @@ def assign_app_to_group(app_id, group_id, api_token, okta_domain):
         return False
 
 def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
-    """Creates an OIDC App in Okta using the Dynamic Client Registration API"""
+    """Creates a PUBLIC OIDC App in Okta using Dynamic Client Registration.
+    
+    Per MCP OAuth best practices:
+    - token_endpoint_auth_method: "none" (public client)
+    - PKCE provides security instead of client secrets
+    - No client_secret is generated or returned
+    """
     url = f"https://{okta_domain}/oauth2/v1/clients"
     
     payload = {
         "client_name": client_name,
         "redirect_uris": redirect_uris,
-        "response_types": ["code","id_token"],
-        "grant_types": ["authorization_code","refresh_token","implicit"],
-        "token_endpoint_auth_method": "client_secret_post",
-        "application_type": "web"    }
+        "response_types": ["code"],  # Only authorization code flow
+        "grant_types": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_method": "none",  # PUBLIC client - no secret
+        "application_type": "native"  # Required for public clients in Okta
+    }
 
     headers = {
         'Accept': 'application/json',
@@ -165,6 +172,46 @@ def create_okta_client(client_name, redirect_uris, api_token, okta_domain):
         error_body = e.read().decode('utf-8')
         logger.error(f"Okta API Error: {e.code} - {error_body}")
         raise Exception(f"Okta API Error: {error_body}")
+
+def update_okta_client(client_id, client_name, redirect_uris, api_token, okta_domain, app_type="web", auth_method="client_secret_post"):
+    """Updates an existing OIDC App in Okta"""
+    url = f"https://{okta_domain}/oauth2/v1/clients/{client_id}"
+    
+    # Defaults for 'web'
+    grant_types = ["authorization_code","refresh_token","implicit"]
+    response_types = ["code","id_token"]
+
+    if app_type in ["browser", "native", "spa"]:
+        auth_method = "none" 
+        grant_types = ["authorization_code", "refresh_token", "implicit"]
+    elif app_type == "web":
+         # Use POST auth to match OpenWebUI's behavior
+         auth_method = "client_secret_post"
+
+    payload = {
+        "client_id": client_id,
+        "client_name": client_name,
+        "redirect_uris": redirect_uris,
+        "response_types": response_types,
+        "grant_types": grant_types,
+        "token_endpoint_auth_method": auth_method,
+        "application_type": app_type    
+    }
+
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_token}' 
+    }
+
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers, method='PUT')
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        logger.error(f"Okta Update Error: {e.code} - {error_body}")
+        raise Exception(f"Okta Update Error: {error_body}")
 
 def validate_redirect_uris(uris):
     """Validates Redirect URIs based on configuration restrictions"""
@@ -233,17 +280,37 @@ def handler(event, context):
         # existing_client = None 
         
         if existing_client:
-            logger.info(f"Client '{client_name}' already exists. Rotating secret.")
+            logger.info(f"Client '{client_name}' already exists ")
             new_client_id = existing_client['client_id']
-            # Rotate secret to ensure caller has valid credentials
-            secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
-            new_client_secret = secret_response['client_secret']
+            
+            # # Determine Client Type based on request (same logic as new client)
+            # req_auth_method = body.get('token_endpoint_auth_method', 'client_secret_post')
+            # req_app_type = "web"
+            # if req_auth_method == "none":
+            #     explicit_type = body.get('application_type')
+            #     req_app_type = explicit_type if explicit_type in ['native', 'browser'] else 'browser'
+
+            # # Update Client Config (Redirect URIs, etc)
+            # # This ensures if the URI changed (e.g. from localhost to real domain), Okta gets updated
+            # update_okta_client(new_client_id, client_name, redirect_uris, access_token, okta_domain, app_type=req_app_type, auth_method=req_auth_method)
+            
+            # # Rotate secret to ensure caller has valid credentials
+            # secret_response = rotate_client_secret(new_client_id, access_token, okta_domain)
+            # new_client_secret = secret_response['client_secret']
+            
+            # # Reuse the 'okta_app' structure for response construction
+            # okta_app = {
+            #     'client_id': new_client_id,
+            #     'token_endpoint_auth_method': req_auth_method,
+            #     'grant_types': ["authorization_code", "refresh_token", "implicit"] if req_auth_method == "none" else ["authorization_code", "refresh_token"],
+            #     'response_types': ["code", "id_token"] if req_auth_method == "none" else ["code"]
+            #}
         else:
-            # Create New Client
-            logger.info(f"Creating new client '{client_name}'")
+            # Create New PUBLIC Client (no client_secret)
+            logger.info(f"Creating new public client '{client_name}'")
             okta_app = create_okta_client(client_name, redirect_uris, access_token, okta_domain)
             new_client_id = okta_app['client_id']
-            new_client_secret = okta_app['client_secret']
+            # Note: Public clients don't have client_secret - PKCE provides security
 
         # 3. Assign to Group (Disabled per user request)
         # assign_app_to_group(new_client_id, app_group_id, access_token, okta_domain)
@@ -268,8 +335,7 @@ def handler(event, context):
                     authorizerConfiguration={
                         'customJWTAuthorizer': {
                             'discoveryUrl': current_custom_jwt['discoveryUrl'],
-                            'allowedClients': updated_clients,
-                            'allowedScopes': current_scopes
+                            'allowedClients': updated_clients
                         }
                     }
                 )
@@ -279,17 +345,21 @@ def handler(event, context):
         else:
             logger.warning(f"Gateway '{gateway_name}' not found - client created but not added to AllowedClients")
 
-        # Return RFC 7591 compliant response
-        return response(201 if not existing_client else 200, {
+        # Return RFC 7591 compliant response for PUBLIC client
+        # Per MCP OAuth best practices: no client_secret for public PKCE clients
+        response_body = {
             'client_id': new_client_id,
-            'client_secret': new_client_secret,
             'client_name': client_name,
             'redirect_uris': redirect_uris,
             'scope': 'openid profile email offline_access agentcore.gateway.access',
-            'token_endpoint_auth_method': 'client_secret_basic',
+            'token_endpoint_auth_method': 'none',  # Public client
             'grant_types': ['authorization_code', 'refresh_token'],
             'response_types': ['code']
-        })
+        }
+        # Note: No client_secret - PKCE provides security for public clients
+            
+        return response(201 if not existing_client else 200, response_body)
+
 
     except Exception as e:
         logger.error(f"DCR failed: {e}")

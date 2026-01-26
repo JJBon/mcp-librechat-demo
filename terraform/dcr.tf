@@ -46,8 +46,8 @@ resource "aws_api_gateway_method_response" "oidc_config_200" {
   http_method = aws_api_gateway_method.oidc_config_get.http_method
   status_code = "200"
   response_parameters = {
-    "method.response.header.Content-Type"                 = true
-    "method.response.header.Access-Control-Allow-Origin"  = true
+    "method.response.header.Content-Type"                = true
+    "method.response.header.Access-Control-Allow-Origin" = true
   }
 }
 
@@ -58,25 +58,25 @@ resource "aws_api_gateway_integration_response" "oidc_config_response" {
   status_code = aws_api_gateway_method_response.oidc_config_200.status_code
 
   response_parameters = {
-    "method.response.header.Content-Type"                 = "'application/json'"
-    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+    "method.response.header.Content-Type"                = "'application/json'"
+    "method.response.header.Access-Control-Allow-Origin" = "'*'"
   }
 
   response_templates = {
     "application/json" = jsonencode({
-      issuer                 = "https://${var.okta_domain}/oauth2/default"
-      authorization_endpoint = "https://${var.okta_domain}/oauth2/default/v1/authorize"
-      token_endpoint         = "https://${var.okta_domain}/oauth2/default/v1/token"
-      userinfo_endpoint      = "https://${var.okta_domain}/oauth2/default/v1/userinfo"
-      revocation_endpoint    = "https://${var.okta_domain}/oauth2/default/v1/revoke"
-      jwks_uri               = "https://${var.okta_domain}/oauth2/default/v1/keys"
-      registration_endpoint  = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
-      scopes_supported       = ["openid", "email", "phone", "profile", "offline_access", "agentcore.gateway.access"],
-      response_types_supported = ["code"]
-      grant_types_supported    = ["authorization_code", "refresh_token"]
-      subject_types_supported  = ["public"]
+      issuer                                = "https://${var.okta_domain}/oauth2/default"
+      authorization_endpoint                = "https://${var.okta_domain}/oauth2/default/v1/authorize"
+      token_endpoint                        = "https://${var.okta_domain}/oauth2/default/v1/token"
+      userinfo_endpoint                     = "https://${var.okta_domain}/oauth2/default/v1/userinfo"
+      revocation_endpoint                   = "https://${var.okta_domain}/oauth2/default/v1/revoke"
+      jwks_uri                              = "https://${var.okta_domain}/oauth2/default/v1/keys"
+      registration_endpoint                 = "https://${aws_api_gateway_rest_api.oauth_api.id}.execute-api.${data.aws_region.current.region}.amazonaws.com/prod/register"
+      scopes_supported                      = ["openid", "email", "phone", "profile", "offline_access", "agentcore.gateway.access"],
+      response_types_supported              = ["code"]
+      grant_types_supported                 = ["authorization_code", "refresh_token"]
+      subject_types_supported               = ["public"]
       id_token_signing_alg_values_supported = ["RS256"]
-      token_endpoint_auth_methods_supported = ["client_secret_basic", "client_secret_post"]
+      token_endpoint_auth_methods_supported = ["none"] # Public PKCE clients only
       code_challenge_methods_supported      = ["S256"]
     })
   }
@@ -99,12 +99,12 @@ resource "aws_api_gateway_method" "register_post" {
 }
 
 resource "aws_api_gateway_integration" "register_lambda" {
-  rest_api_id = aws_api_gateway_rest_api.oauth_api.id
-  resource_id = aws_api_gateway_resource.register.id
-  http_method = aws_api_gateway_method.register_post.http_method
-  type        = "AWS_PROXY"
+  rest_api_id             = aws_api_gateway_rest_api.oauth_api.id
+  resource_id             = aws_api_gateway_resource.register.id
+  http_method             = aws_api_gateway_method.register_post.http_method
+  type                    = "AWS_PROXY"
   integration_http_method = "POST"
-  uri         = aws_lambda_function.dcr_lambda.invoke_arn
+  uri                     = aws_lambda_function.dcr_lambda.invoke_arn
 }
 
 # /register OPTIONS (CORS)
@@ -159,7 +159,7 @@ resource "aws_api_gateway_deployment" "oauth_api_deploy" {
     aws_api_gateway_integration_response.oidc_config_response,
     aws_api_gateway_integration.register_lambda,
     aws_api_gateway_integration_response.register_options_response,
-    aws_api_gateway_integration_response.oidc_config_options_response  # Add new dependency
+    aws_api_gateway_integration_response.oidc_config_options_response # Add new dependency
   ]
 
   lifecycle {
@@ -195,15 +195,15 @@ resource "aws_lambda_function" "dcr_lambda" {
 
   environment {
     variables = {
-      OKTA_DOMAIN        = var.okta_domain
-      OKTA_CLIENT_ID     = var.okta_client_id
-      OKTA_PRIVATE_KEY   = var.okta_private_key
-      OKTA_PRIVATE_KEY_ID = var.okta_private_key_id
-      OKTA_APP_GROUP_ID  = var.okta_app_group_id
-      OKTA_APP_GROUP_ID     = var.okta_app_group_id
-      GATEWAY_NAME          = "${var.app_name}-Gateway" 
-      RESOURCE_PREFIX       = var.app_name
-      ALLOW_LOCALHOST       = tostring(var.allow_localhost_dcr)
+      OKTA_DOMAIN            = var.okta_domain
+      OKTA_CLIENT_ID         = var.okta_client_id
+      OKTA_PRIVATE_KEY       = var.okta_private_key
+      OKTA_PRIVATE_KEY_ID    = var.okta_private_key_id
+      OKTA_APP_GROUP_ID      = var.okta_app_group_id
+      OKTA_APP_GROUP_ID      = var.okta_app_group_id
+      GATEWAY_NAME           = "${var.app_name}-Gateway"
+      RESOURCE_PREFIX        = var.app_name
+      ALLOW_LOCALHOST        = tostring(var.allow_localhost_dcr)
       ALLOWED_DOMAIN_PATTERN = var.allowed_redirect_domain_pattern
     }
   }
@@ -228,8 +228,8 @@ resource "aws_iam_role" "dcr_lambda_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
     }]
   })
@@ -256,8 +256,8 @@ resource "aws_iam_role_policy" "dcr_policy" {
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = "iam:PassRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
         Resource = aws_iam_role.agentcore_gateway_role.arn
       }
     ]
