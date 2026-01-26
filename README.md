@@ -83,20 +83,34 @@ graph TB
 
 ## Deployment
 
-### 1. Configure Variables
+### 1. Create Secret in AWS Secrets Manager
+
+Store the Okta private key in Secrets Manager:
+
+```bash
+aws secretsmanager create-secret \
+  --name "mcp-gateway/okta-private-key" \
+  --secret-string "$(cat your-private-key.pem)"
+```
+
+Note the ARN returned (e.g., `arn:aws:secretsmanager:us-east-1:123456789012:secret:mcp-gateway/okta-private-key-AbCdEf`).
+
+### 2. Configure Variables
 
 Create `terraform.tfvars`:
 
 ```hcl
-app_name           = "mcp-gateway"
-okta_domain        = "your-tenant.okta.com"
-okta_client_id     = "0oa..."  # Service App Client ID
-okta_private_key   = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-okta_private_key_id = "key-id-uuid"
-okta_app_group_id  = "00g..."  # Optional: Group for app assignment
+app_name                     = "mcp-gateway"
+okta_domain                  = "your-tenant.okta.com"
+okta_client_id               = "0oa..."  # Service App Client ID
+okta_private_key_id          = "key-id-uuid"  # kid from Okta
+
+# AWS Secrets Manager references
+okta_private_key_secret_name = "mcp-gateway/okta-private-key"
+okta_private_key_secret_arn  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:mcp-gateway/okta-private-key-AbCdEf"
 ```
 
-### 2. Deploy
+### 3. Deploy
 
 ```bash
 cd terraform
