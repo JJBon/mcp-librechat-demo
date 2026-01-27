@@ -27,6 +27,10 @@ def lambda_handler(event, context):
     headers = gateway_request.get('headers', {})
     body = gateway_request.get('body', {})
     
+    logger.info(f"DEBUG: All incoming headers: {json.dumps(headers)}")
+    
+    logger.info(f"DEBUG: All incoming headers: {json.dumps(headers)}")
+    
     # Get the user's inbound authorization token
     # Headers may be lowercase or title-case depending on origin
     auth_header = headers.get('authorization', '') or headers.get('Authorization', '')
@@ -42,7 +46,8 @@ def lambda_handler(event, context):
         "mcp": {
             "transformedGatewayRequest": {
                 "headers": {
-                    "Authorization": auth_header,  # Pass through user's token
+                    "Authorization": auth_header,
+                    "x-amzn-bedrock-agentcore-runtime-user-id": headers.get("x-amzn-bedrock-agentcore-runtime-user-id") or headers.get("X-Amzn-Bedrock-AgentCore-Runtime-User-Id") or "test-user-123", 
                     "Accept": "application/json",
                     "Content-Type": "application/json"
                 },

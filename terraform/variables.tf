@@ -65,3 +65,35 @@ variable "syntheticdata_runtime_arn" {
   type        = string
   default     = ""
 }
+
+variable "syntheticdata_okta_client_id" {
+  description = "Client ID for Synthetic Data M2M App"
+  type        = string
+  default     = ""
+}
+
+variable "syntheticdata_okta_client_secret" {
+  description = "Client Secret for Synthetic Data M2M App"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "syntheticdata_okta_scope" {
+  description = "Scope for Synthetic Data M2M App"
+  type        = string
+  default     = "syntheticdata:invoke"
+}
+
+variable "okta_3lo_client_id" {
+  description = "Client ID for Okta 3LO App"
+  type        = string
+  default     = ""
+}
+
+variable "okta_3lo_client_secret" {
+  description = "Client Secret for Okta 3LO App"
+  type        = string
+  sensitive   = true
+  default     = ""
+}

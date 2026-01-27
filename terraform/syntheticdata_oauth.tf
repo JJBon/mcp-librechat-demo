@@ -6,24 +6,6 @@
 ################################################################################
 
 # Variables for Okta M2M authentication for syntheticdata Runtime
-variable "syntheticdata_okta_client_id" {
-  description = "Okta M2M application client ID for syntheticdata Runtime"
-  type        = string
-  default     = ""
-}
-
-variable "syntheticdata_okta_client_secret" {
-  description = "Okta M2M application client secret for syntheticdata Runtime"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "syntheticdata_okta_scope" {
-  description = "OAuth scope for syntheticdata Runtime (e.g., syntheticdata:invoke)"
-  type        = string
-  default     = "syntheticdata:invoke"
-}
 
 # Create OAuth2 credential provider for Okta (CustomOauth2)
 resource "aws_bedrockagentcore_oauth2_credential_provider" "syntheticdata_oauth" {

@@ -52,6 +52,7 @@ def main():
                 "discoveryUrl": f"https://{okta_domain}/oauth2/default/.well-known/openid-configuration"
             }
         }
+        print(f"DEBUG: Allowed Clients: {auth_config['customJWTAuthorizer']['allowedClients']}")
     else:
         print("No Okta config found - deploying without JWT authorizer")
         print("Set SYNTHETICDATA_OKTA_DOMAIN and SYNTHETICDATA_OKTA_AUDIENCE for user delegation")

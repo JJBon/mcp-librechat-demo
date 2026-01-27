@@ -182,12 +182,12 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
       # Point directly to real Okta (skip DCR proxy for validation reliability)
       discovery_url = "${aws_api_gateway_stage.prod.invoke_url}/.well-known/openid-configuration"
 
-      allowed_clients = ["placeholder-client-id"]
+      allowed_clients = [var.syntheticdata_okta_client_id]
     }
   }
 
   # Interceptor for token passthrough to MCP Runtime targets
-  # Passes user's JWT to Runtime for user delegation
+  # Passes user's JWT or headers to Runtime
   interceptor_configuration {
     interceptor {
       lambda {
@@ -200,14 +200,50 @@ resource "aws_bedrockagentcore_gateway" "agentcore_gateway" {
     }
   }
 
+
+
   lifecycle {
     ignore_changes = [
-      authorizer_configuration
+      # authorizer_configuration # Commented out to allow updates
     ]
   }
 
   depends_on = [aws_lambda_function.token_passthrough_lambda]
 }
+
+resource "aws_cloudwatch_log_group" "gateway_logs" {
+  name              = "/aws/vendedlogs/bedrock-agentcore/gateway/${aws_bedrockagentcore_gateway.agentcore_gateway.gateway_id}"
+  retention_in_days = 7
+}
+
+resource "aws_cloudwatch_log_delivery_source" "gateway_logs_source" {
+  name         = "${aws_bedrockagentcore_gateway.agentcore_gateway.gateway_id}-logs-source"
+  log_type     = "APPLICATION_LOGS"
+  resource_arn = aws_bedrockagentcore_gateway.agentcore_gateway.gateway_arn
+
+  depends_on = [aws_bedrockagentcore_gateway.agentcore_gateway]
+}
+
+resource "aws_cloudwatch_log_delivery_destination" "gateway_logs_dest" {
+  name = "${aws_bedrockagentcore_gateway.agentcore_gateway.gateway_id}-logs-dest"
+
+  delivery_destination_configuration {
+    destination_resource_arn = aws_cloudwatch_log_group.gateway_logs.arn
+  }
+
+  depends_on = [aws_cloudwatch_log_group.gateway_logs]
+}
+
+resource "aws_cloudwatch_log_delivery" "gateway_logs_delivery" {
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.gateway_logs_source.name
+  delivery_destination_arn = aws_cloudwatch_log_delivery_destination.gateway_logs_dest.arn
+
+  depends_on = [
+    aws_cloudwatch_log_delivery_source.gateway_logs_source,
+    aws_cloudwatch_log_delivery_destination.gateway_logs_dest
+  ]
+}
+
 
 resource "aws_bedrockagentcore_gateway_target" "agentcore_gateway_lambda_target" {
   name               = "${var.app_name}-Target"
